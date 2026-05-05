@@ -21,6 +21,8 @@
 #include "botlib.h"
 
 /* Configuration. */
+#define MAX_ALLOWED_USERS 64
+#define ALLOWED_USERS_FILE "allowed_users.txt"
 #define MAX_QUEUE 10
 #define MAX_SECONDS 300
 #define MSG_LIMIT 4000
@@ -64,6 +66,22 @@
 #endif
 
 #define EDIT_INTERVAL_MS 500    /* Min ms between message edits. */
+
+/* Allowed Telegram user IDs, loaded from ALLOWED_USERS_FILE at startup. */
+static int64_t AllowedUserIDs[MAX_ALLOWED_USERS];
+static int NumAllowedUsers = 0;
+
+static int loadAllowedUsers(void) {
+    FILE *fp = fopen(ALLOWED_USERS_FILE, "r");
+    if (!fp) return 0;
+    char line[64];
+    while (NumAllowedUsers < MAX_ALLOWED_USERS && fgets(line, sizeof(line), fp)) {
+        int64_t id = strtoll(line, NULL, 10);
+        if (id != 0) AllowedUserIDs[NumAllowedUsers++] = id;
+    }
+    fclose(fp);
+    return NumAllowedUsers > 0;
+}
 
 /* Serialization: only one ASR process at a time. */
 atomic_int QueueLen = 0;
@@ -528,6 +546,12 @@ void cron(sqlite3 *dbhandle) {
 
 int main(int argc, char **argv) {
     static char *triggers[] = {"*", NULL};
+    if (!loadAllowedUsers()) {
+        fprintf(stderr, "No allowed users found. "
+                "Create %s with one Telegram user ID per line.\n",
+                ALLOWED_USERS_FILE);
+        exit(1);
+    }
 #ifdef USE_GROQ_API
     if (!loadGroqApiKey()) {
         fprintf(stderr, "Groq API key not found. "

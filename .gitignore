@@ -2,4 +2,5 @@
 whisperbot
 apikey.txt
 groq_apikey.txt
+allowed_users.txt
 *.sqlite

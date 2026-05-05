@@ -71,15 +71,16 @@ gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 Both files are listed in `.gitignore` and must never be committed.
 
-### Allowed user
+### Allowed users
 
-The bot only responds to one hardcoded Telegram user ID. Set it before building:
+The bot only responds to Telegram user IDs listed in `allowed_users.txt` (one ID per line):
 
-```c
-#define ALLOWED_USER_ID 123456789LL   // whisperbot.c, line ~24
+```
+123456789
+987654321
 ```
 
-Find your ID by messaging [@userinfobot](https://t.me/userinfobot).
+Find your ID by messaging [@userinfobot](https://t.me/userinfobot). The file is listed in `.gitignore` and must never be committed. The bot refuses to start if the file is missing or empty.
 
 ### Other tunables (top of `whisperbot.c`)
 
@@ -135,6 +136,6 @@ sudo journalctl -u whisperbot -f
 
 ## Limitations
 
-- Allowed user list is a single hardcoded ID (edit and recompile to change).
+- Allowed user list is stored in `allowed_users.txt` (no recompile needed to add/remove users).
 - Backend and model paths for local backends are hardcoded.
 - No persistence: in-flight requests are lost on restart.
