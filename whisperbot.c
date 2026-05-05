@@ -27,12 +27,11 @@
 #define TIMEOUT 600
 /* Select backend: uncomment exactly one. */
 /* #define USE_WHISPER */
-#define USE_QWEN3_ASR
+/* #define USE_QWEN3_ASR */
+#define USE_GROQ_API
 
-#if defined(USE_WHISPER) && defined(USE_QWEN3_ASR)
-#error "Define only one backend: USE_WHISPER or USE_QWEN3_ASR."
-#elif !defined(USE_WHISPER) && !defined(USE_QWEN3_ASR)
-#error "Define one backend: USE_WHISPER or USE_QWEN3_ASR."
+#if (defined(USE_WHISPER) + defined(USE_QWEN3_ASR) + defined(USE_GROQ_API)) != 1
+#error "Define exactly one backend: USE_WHISPER, USE_QWEN3_ASR, or USE_GROQ_API."
 #endif
 
 #ifdef USE_WHISPER
@@ -57,11 +56,123 @@
 #define QUEUE_THRESHOLD_FAST 3 /* Use fast model when queue >= this */
 #endif
 
+#ifdef USE_GROQ_API
+#define MODEL_BACKEND_NAME "Groq"
+#define GROQ_URL "https://api.groq.com/openai/v1/audio/transcriptions"
+#define GROQ_MODEL "whisper-large-v3-turbo"
+#define GROQ_KEYFILE "groq_apikey.txt"
+#endif
+
 #define EDIT_INTERVAL_MS 500    /* Min ms between message edits. */
 
 /* Serialization: only one ASR process at a time. */
 atomic_int QueueLen = 0;
 pthread_mutex_t WhisperLock = PTHREAD_MUTEX_INITIALIZER;
+
+#ifdef USE_GROQ_API
+#include <curl/curl.h>
+
+static char GroqApiKey[256] = {0};
+
+/* Load Groq API key from GROQ_KEYFILE. Returns 1 on success. */
+static int loadGroqApiKey(void) {
+    FILE *fp = fopen(GROQ_KEYFILE, "r");
+    if (!fp) return 0;
+    if (!fgets(GroqApiKey, sizeof(GroqApiKey), fp)) {
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    int len = strlen(GroqApiKey);
+    while (len > 0 && (GroqApiKey[len-1] == '\n' ||
+                       GroqApiKey[len-1] == '\r' ||
+                       GroqApiKey[len-1] == ' '))
+        GroqApiKey[--len] = '\0';
+    return len > 0;
+}
+
+/* Curl write callback: appends received data to an sds string. */
+static size_t curlWriteSds(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    sds *buf = userdata;
+    size_t total = size * nmemb;
+    *buf = sdscatlen(*buf, ptr, total);
+    return total;
+}
+
+/* POST wav file to Groq STT, edit msg_id with result. */
+static int groqTranscribe(const char *wav, int64_t chat_id, int64_t msg_id) {
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        botEditMessageText(chat_id, msg_id, "Transcription error (curl init).");
+        return -1;
+    }
+
+    char auth_header[300];
+    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", GroqApiKey);
+    struct curl_slist *headers = curl_slist_append(NULL, auth_header);
+
+    curl_mime *form = curl_mime_init(curl);
+    curl_mimepart *part;
+
+    part = curl_mime_addpart(form);
+    curl_mime_name(part, "model");
+    curl_mime_data(part, GROQ_MODEL, CURL_ZERO_TERMINATED);
+
+    part = curl_mime_addpart(form);
+    curl_mime_name(part, "file");
+    curl_mime_filedata(part, wav);
+    curl_mime_type(part, "audio/wav");
+
+    sds body = sdsempty();
+
+    curl_easy_setopt(curl, CURLOPT_URL, GROQ_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, form);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteSds);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_mime_free(form);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        botEditMessageText(chat_id, msg_id, "Transcription request failed.");
+        sdsfree(body);
+        return -1;
+    }
+
+    cJSON *json = cJSON_Parse(body);
+    sdsfree(body);
+    if (!json) {
+        botEditMessageText(chat_id, msg_id, "Transcription error (bad JSON).");
+        return -1;
+    }
+
+    cJSON *text_field = cJSON_GetObjectItemCaseSensitive(json, "text");
+    if (!cJSON_IsString(text_field) || !text_field->valuestring) {
+        botEditMessageText(chat_id, msg_id, "Transcription error (no text field).");
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    sds result = sdsnew(text_field->valuestring);
+    cJSON_Delete(json);
+    sdstrim(result, " \t\r\n");
+
+    if (sdslen(result) == 0)
+        botEditMessageText(chat_id, msg_id, "(no speech detected)");
+    else
+        botEditMessageText(chat_id, msg_id, result);
+
+    sdsfree(result);
+    return 0;
+}
+#endif /* USE_GROQ_API */
+
 
 /* Return current time in milliseconds. */
 long long mstime(void) {
@@ -378,24 +489,33 @@ void handleRequest(sqlite3 *dbhandle, BotRequest *br) {
     /* Wait for turn. */
     pthread_mutex_lock(&WhisperLock);
 
-    /* Select model based on queue length. */
+    /* Select model based on queue length (not used for API backends). */
+#ifndef USE_GROQ_API
     int qlen = atomic_load(&QueueLen);
     const char *model = qlen >= QUEUE_THRESHOLD_FAST ? MODEL_FAST : MODEL_BEST;
     const char *mname = qlen >= QUEUE_THRESHOLD_FAST ? MODEL_FAST_NAME : MODEL_BEST_NAME;
+#endif
 
     char msg[96];
+#ifdef USE_GROQ_API
+    snprintf(msg, sizeof(msg), "Transcribing (%s)...", MODEL_BACKEND_NAME);
+#else
     snprintf(msg, sizeof(msg), "Transcribing (%s %s)...",
              MODEL_BACKEND_NAME, mname);
+#endif
     botEditMessageText(chat_id, msg_id, msg);
 
-    /* Run the model, we pass the chat/msg ID since it will update
-     * the message with actual transcription. */
+    /* Run the selected ASR backend. */
+#ifdef USE_GROQ_API
+    groqTranscribe(out, chat_id, msg_id);
+#else
 #ifdef USE_WHISPER
     int short_audio = dur < SHORT_AUDIO_THRESHOLD;
 #else
     int short_audio = 0;
 #endif
     transcribe(out, model, br->target, chat_id, msg_id, short_audio);
+#endif
 
     pthread_mutex_unlock(&WhisperLock);
     atomic_fetch_sub(&QueueLen, 1);
@@ -408,6 +528,13 @@ void cron(sqlite3 *dbhandle) {
 
 int main(int argc, char **argv) {
     static char *triggers[] = {"*", NULL};
+#ifdef USE_GROQ_API
+    if (!loadGroqApiKey()) {
+        fprintf(stderr, "Groq API key not found. "
+                "Create %s with your key.\n", GROQ_KEYFILE);
+        exit(1);
+    }
+#endif
     printf("%s bot started. Queue max: %d, Audio max: %ds\n",
            MODEL_BACKEND_NAME, MAX_QUEUE, MAX_SECONDS);
     startBot(TB_CREATE_KV_STORE, argc, argv, TB_FLAGS_NONE,
