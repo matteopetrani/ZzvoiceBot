@@ -26,8 +26,8 @@
 #define MSG_LIMIT 4000
 #define TIMEOUT 600
 /* Select backend: uncomment exactly one. */
-#define USE_WHISPER
-/* #define USE_QWEN3_ASR */
+/* #define USE_WHISPER */
+#define USE_QWEN3_ASR
 
 #if defined(USE_WHISPER) && defined(USE_QWEN3_ASR)
 #error "Define only one backend: USE_WHISPER or USE_QWEN3_ASR."
@@ -49,11 +49,11 @@
 
 #ifdef USE_QWEN3_ASR
 #define MODEL_BACKEND_NAME "Qwen3-ASR"
-#define MODEL_BIN_PATH "/Users/antirez/hack/2026/qwen-asr/qwen_asr"
-#define MODEL_FAST "/Users/antirez/hack/2026/qwen-asr/qwen3-asr-0.6b"
-#define MODEL_BEST "/Users/antirez/hack/2026/qwen-asr/qwen3-asr-1.7b"
+#define MODEL_BIN_PATH "/home/teone/qwen-asr/qwen_asr"
+#define MODEL_FAST "/home/teone/qwen-asr/qwen3-asr-0.6b"
+#define MODEL_BEST "/home/teone/qwen-asr/qwen3-asr-0.6b"
 #define MODEL_FAST_NAME "0.6b"
-#define MODEL_BEST_NAME "1.7b"
+#define MODEL_BEST_NAME "0.6b"
 #define QUEUE_THRESHOLD_FAST 3 /* Use fast model when queue >= this */
 #endif
 
@@ -307,6 +307,11 @@ int isAudioFile(BotRequest *br) {
 
 void handleRequest(sqlite3 *dbhandle, BotRequest *br) {
     UNUSED(dbhandle);
+
+    int allowed = 0;
+    for (int i = 0; i < NumAllowedUsers; i++)
+        if (br->from == AllowedUserIDs[i]) { allowed = 1; break; }
+    if (!allowed) return;
 
     /* Accept voice messages, audio files, or documents that look like audio. */
     int is_audio = 0;
