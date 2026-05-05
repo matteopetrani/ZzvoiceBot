@@ -1,4 +1,5 @@
 *.o
 whisperbot
 apikey.txt
+groq_apikey.txt
 *.sqlite
