@@ -204,6 +204,7 @@ int transcribe(const char *wav, const char *model, int64_t target,
         execlp(MODEL_BIN_PATH, "qwen_asr",
                "-d", model,
                "-i", wav,
+               "-S", "20",
                NULL);
 #endif
         _exit(1);
